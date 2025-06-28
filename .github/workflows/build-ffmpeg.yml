@@ -70,8 +70,8 @@ jobs:
           --enable-static \
           --disable-doc \
           --disable-debug \
-          --disable-ffplay \
-          --disable-ffprobe
+          # --disable-ffplay \
+          # --disable-ffprobe
         make -j$(nproc)
         make install
 
