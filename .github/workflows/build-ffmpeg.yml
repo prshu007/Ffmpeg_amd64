@@ -82,12 +82,15 @@ jobs:
 
     - name: Package FFmpeg binaries
       run: |
-        cd "$HOME/bin"
-        tar -czvf ffmpeg-binaries-linux-amd64.tar.gz ffmpeg ffprobe
+        mkdir -p "${{ github.workspace }}/ffmpeg_build_output" # Create a new directory for artifacts
+        cd "$HOME/bin" # Go to where ffmpeg and ffprobe are installed
+        tar -czvf "${{ github.workspace }}/ffmpeg_build_output/ffmpeg-binaries-linux-amd64.tar.gz" ffmpeg ffprobe
+        # ^^^^^^ Changed the output path of tar here
+      # No longer need 'cd "$HOME/bin"' in the artifact path itself
 
     - name: Upload FFmpeg binaries as artifact
       uses: actions/upload-artifact@v4
       with:
         name: ffmpeg-linux-amd64
-        path: ${{ env.HOME }}/bin/ffmpeg-binaries-linux-amd64.tar.gz
+        path: ${{ github.workspace }}/ffmpeg_build_output/ffmpeg-binaries-linux-amd64.tar.gz # <--- Updated path
         retention-days: 7
