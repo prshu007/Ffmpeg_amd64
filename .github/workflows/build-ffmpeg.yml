@@ -4,23 +4,38 @@ on:
   push:
     branches:
       - main
-  workflow_dispatch: # Allows manual trigger
+  workflow_dispatch:
 
 jobs:
   build:
-    runs-on: ubuntu-latest # Or macos-latest if you want to build for macOS
+    runs-on: ubuntu-latest
+
+    env:
+      FFMPEG_BUILD_DIR: /home/runner/ffmpeg_build
+      FFMPEG_LIBS_DIR: /home/runner/ffmpeg_build/ffmpeg_libs
+      FFMPEG_BIN_INSTALLED_DIR: /home/runner/ffmpeg_build/bin_installed
+      # ADD THIS LINE:
+      PKG_CONFIG_PATH: /home/runner/ffmpeg_build/ffmpeg_libs/lib/pkgconfig # Point to where x264.pc is installed
 
     steps:
     - name: Checkout code
-      uses: actions/checkout@v4 # Action to clone your repository
+      uses: actions/checkout@v4
 
-    - name: Set up build directory
+    # No need for the 'Set up build directory' step's `echo` commands for env vars
+    # as they are now defined globally at the job level.
+    # You might still want the mkdir -p command here though if not doing it elsewhere.
+    - name: Ensure build directories exist
       run: |
-        mkdir -p "$HOME/ffmpeg_build"
-        echo "FFMPEG_BUILD_DIR=$HOME/ffmpeg_build" >> $GITHUB_ENV
-        echo "FFMPEG_LIBS_DIR=$HOME/ffmpeg_build/ffmpeg_libs" >> $GITHUB_ENV
-        echo "FFMPEG_BIN_INSTALLED_DIR=$HOME/ffmpeg_build/bin_installed" >> $GITHUB_ENV
-        echo "PATH=$HOME/bin:$PATH" >> $GITHUB_ENV # Add to PATH for the job
+        mkdir -p "${{ env.FFMPEG_BUILD_DIR }}"
+        # No need to set env vars here anymore as they are global
+        # echo "FFMPEG_BUILD_DIR=$HOME/ffmpeg_build" >> $GITHUB_ENV
+        # echo "FFMPEG_LIBS_DIR=$HOME/ffmpeg_build/ffmpeg_libs" >> $GITHUB_ENV
+        # echo "FFMPEG_BIN_INSTALLED_DIR=$HOME/ffmpeg_build/bin_installed" >> $GITHUB_ENV
+        # Also, the PATH should ideally be set in the 'env' block if you want it for all steps
+        # If you need it only for certain commands, you can still add it like this.
+        # But for 'ffmpeg' command later, it's better to be in the job's env block or shell profile
+        echo "Adding $HOME/bin to PATH for this runner session"
+        echo "PATH=$HOME/bin:$PATH" >> $GITHUB_ENV # Ensure $HOME/bin is in PATH for subsequent steps
 
     - name: Install build dependencies
       run: |
@@ -41,6 +56,7 @@ jobs:
       run: |
         git clone https://git.ffmpeg.org/ffmpeg.git ffmpeg
         cd ffmpeg
+        # The configure command remains the same, but now PKG_CONFIG_PATH is correctly set globally
         ./configure \
           --prefix="${{ env.FFMPEG_BIN_INSTALLED_DIR }}" \
           --pkg-config-flags="--static" \
@@ -62,17 +78,16 @@ jobs:
     - name: Verify FFmpeg installation
       run: |
         ffmpeg -version
-        which ffmpeg # Should show /home/runner/bin/ffmpeg
+        which ffmpeg
 
-    # Optional: Package the built binaries and upload as an artifact
     - name: Package FFmpeg binaries
       run: |
         cd "$HOME/bin"
-        tar -czvf ffmpeg-binaries-linux-amd64.tar.gz ffmpeg ffprobe # include ffprobe if you enabled it
+        tar -czvf ffmpeg-binaries-linux-amd64.tar.gz ffmpeg ffprobe
 
     - name: Upload FFmpeg binaries as artifact
       uses: actions/upload-artifact@v4
       with:
         name: ffmpeg-linux-amd64
         path: ${{ env.HOME }}/bin/ffmpeg-binaries-linux-amd64.tar.gz
-        retention-days: 7 # How long to keep the artifact
+        retention-days: 7
