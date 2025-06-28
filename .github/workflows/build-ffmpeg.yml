@@ -1,0 +1,77 @@
+name: Full FFmpeg Build (x264, x265, VP8/VP9, AAC)
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Install dependencies
+        run: |
+          sudo apt update
+          sudo apt install -y autoconf automake build-essential cmake git libtool pkg-config yasm nasm libnuma-dev libfdk-aac-dev
+
+      - name: Build x264
+        run: |
+          git clone --depth 1 https://code.videolan.org/videolan/x264.git
+          cd x264
+          ./configure --prefix=$HOME/ffmpeg_build --enable-static
+          make -j$(nproc)
+          make install
+
+      - name: Build x265
+        run: |
+          git clone --depth 1 https://bitbucket.org/multicoreware/x265_git
+          cd x265_git/build/linux
+          cmake -G "Unix Makefiles" -DCMAKE_INSTALL_PREFIX=$HOME/ffmpeg_build -DENABLE_SHARED=off ../../source
+          make -j$(nproc)
+          make install
+
+      - name: Build libvpx (VP8/VP9)
+        run: |
+          git clone --depth 1 https://chromium.googlesource.com/webm/libvpx
+          cd libvpx
+          ./configure --prefix=$HOME/ffmpeg_build --disable-examples --disable-unit-tests --enable-vp8 --enable-vp9 --enable-static --disable-shared
+          make -j$(nproc)
+          make install
+
+      - name: Clone FFmpeg
+        run: |
+          git clone https://git.ffmpeg.org/ffmpeg.git ffmpeg
+
+      - name: Build FFmpeg with all codecs
+        run: |
+          cd ffmpeg
+          PKG_CONFIG_PATH="$HOME/ffmpeg_build/lib/pkgconfig" ./configure \
+            --prefix="$HOME/ffmpeg_build" \
+            --pkg-config-flags="--static" \
+            --extra-cflags="-I$HOME/ffmpeg_build/include" \
+            --extra-ldflags="-L$HOME/ffmpeg_build/lib" \
+            --extra-libs="-lpthread -lm" \
+            --enable-gpl \
+            --enable-nonfree \
+            --enable-libx264 \
+            --enable-libx265 \
+            --enable-libvpx \
+            --enable-libfdk_aac \
+            --enable-static \
+            --disable-shared \
+            --disable-debug \
+            --disable-doc
+          make -j$(nproc)
+          make install
+
+      - name: Upload FFmpeg Binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: full-ffmpeg
+          path: ${{ runner.home }}/ffmpeg_build/bin/ffmpeg
+
+      - name: Upload to GitHub Release
+        uses: softprops/action-gh-release@v1
+        with:
+          name: "FFmpeg Build with All Codecs"
+          tag_name: "v1.0-${{ github.run_number }}"
+          files: ${{ runner.home }}/ffmpeg_build/bin/ffmpeg
