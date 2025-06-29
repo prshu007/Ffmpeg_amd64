@@ -1,4 +1,4 @@
-name: Build FFmpeg with libx264
+name: Build FFmpeg with libx264 for Broad Compatibility
 
 on:
   push:
@@ -8,39 +8,40 @@ on:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    # Use a self-hosted runner OR run directly inside a compatible Docker container
+    runs-on: ubuntu-latest # Still use this for the runner OS
+    container: # Add this section
+      image: centos:7 # Example: CentOS 7 has an older GLIBC (around 2.17)
+      # Alternatively, for even more control and Python compatibility:
+      # image: quay.io/pypa/manylinux2014_x86_64 # Based on CentOS 7, good for binary distribution
+      options: --user root # Ensure root privileges inside the container
 
     env:
-      FFMPEG_BUILD_DIR: /home/runner/ffmpeg_build
-      FFMPEG_LIBS_DIR: /home/runner/ffmpeg_build/ffmpeg_libs
-      FFMPEG_BIN_INSTALLED_DIR: /home/runner/ffmpeg_build/bin_installed
-      # ADD THIS LINE:
-      PKG_CONFIG_PATH: /home/runner/ffmpeg_build/ffmpeg_libs/lib/pkgconfig # Point to where x264.pc is installed
+      FFMPEG_BUILD_DIR: /ffmpeg_build # Paths inside the container
+      FFMPEG_LIBS_DIR: /ffmpeg_build/ffmpeg_libs
+      FFMPEG_BIN_INSTALLED_DIR: /ffmpeg_build/bin_installed
+      PKG_CONFIG_PATH: /ffmpeg_build/ffmpeg_libs/lib/pkgconfig
+      PATH: /usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin # Standard paths inside container
 
     steps:
     - name: Checkout code
       uses: actions/checkout@v4
+      # With 'container', the repository is usually mounted at /__w/<repo>/<repo>
+      # We'll adjust subsequent commands to copy what we need into the container's build dir
 
-    # No need for the 'Set up build directory' step's `echo` commands for env vars
-    # as they are now defined globally at the job level.
-    # You might still want the mkdir -p command here though if not doing it elsewhere.
-    - name: Ensure build directories exist
+    - name: Install build dependencies inside container
+      run: |
+        # For CentOS/RHEL/manylinux
+        yum update -y && yum install -y \
+          gcc gcc-c++ make autoconf automake libtool pkgconfig \
+          nasm yasm git tar gzip
+
+    - name: Prepare build directories
       run: |
         mkdir -p "${{ env.FFMPEG_BUILD_DIR }}"
-        # No need to set env vars here anymore as they are global
-        # echo "FFMPEG_BUILD_DIR=$HOME/ffmpeg_build" >> $GITHUB_ENV
-        # echo "FFMPEG_LIBS_DIR=$HOME/ffmpeg_build/ffmpeg_libs" >> $GITHUB_ENV
-        # echo "FFMPEG_BIN_INSTALLED_DIR=$HOME/ffmpeg_build/bin_installed" >> $GITHUB_ENV
-        # Also, the PATH should ideally be set in the 'env' block if you want it for all steps
-        # If you need it only for certain commands, you can still add it like this.
-        # But for 'ffmpeg' command later, it's better to be in the job's env block or shell profile
-        echo "Adding $HOME/bin to PATH for this runner session"
-        echo "PATH=$HOME/bin:$PATH" >> $GITHUB_ENV # Ensure $HOME/bin is in PATH for subsequent steps
-
-    - name: Install build dependencies
-      run: |
-        sudo apt update
-        sudo apt install -y build-essential autoconf automake cmake libtool pkg-config nasm yasm git
+        # Copy source code (if needed, though git clone can be done directly)
+        # You might need to adjust based on how actions/checkout mounts your repo
+        # For simplicity, let's just do git clones directly inside the container
 
     - name: Build libx264
       working-directory: ${{ env.FFMPEG_BUILD_DIR }}
@@ -56,13 +57,12 @@ jobs:
       run: |
         git clone https://git.ffmpeg.org/ffmpeg.git ffmpeg
         cd ffmpeg
-        # The configure command remains the same, but now PKG_CONFIG_PATH is correctly set globally
         ./configure \
           --prefix="${{ env.FFMPEG_BIN_INSTALLED_DIR }}" \
           --pkg-config-flags="--static" \
           --extra-cflags="-I${{ env.FFMPEG_LIBS_DIR }}/include" \
           --extra-ldflags="-L${{ env.FFMPEG_LIBS_DIR }}/lib" \
-          --bindir="$HOME/bin" \
+          --bindir="/usr/local/bin" \ # Install directly to /usr/local/bin inside container for easy access
           --enable-gpl \
           --enable-libx264 \
           --enable-nonfree \
@@ -71,26 +71,25 @@ jobs:
           --disable-doc \
           --disable-debug \
           # --disable-ffplay \
-          # --disable-ffprobe
+          # REMOVE THIS LINE: --disable-ffprobe
         make -j$(nproc)
         make install
 
     - name: Verify FFmpeg installation
       run: |
-        ffmpeg -version
-        which ffmpeg
+        /usr/local/bin/ffmpeg -version # Call directly as PATH might not be updated for the specific user in container
 
     - name: Package FFmpeg binaries
       run: |
-        mkdir -p "${{ github.workspace }}/ffmpeg_build_output" # Create a new directory for artifacts
-        cd "$HOME/bin" # Go to where ffmpeg and ffprobe are installed
-        tar -czvf "${{ github.workspace }}/ffmpeg_build_output/ffmpeg-binaries-linux-amd64.tar.gz" ffmpeg ffprobe
-        # ^^^^^^ Changed the output path of tar here
-      # No longer need 'cd "$HOME/bin"' in the artifact path itself
+        mkdir -p "${{ github.workspace }}/ffmpeg_build_output"
+        # Get the binaries from the container's /usr/local/bin
+        tar -czvf "${{ github.workspace }}/ffmpeg_build_output/ffmpeg-binaries-linux-amd64.tar.gz" -C /usr/local/bin ffmpeg ffprobe
+        # ^^^ -C /usr/local/bin: change directory before adding files to tar
+        # You might need to ensure ffprobe is built (remove --disable-ffprobe)
 
     - name: Upload FFmpeg binaries as artifact
       uses: actions/upload-artifact@v4
       with:
         name: ffmpeg-linux-amd64
-        path: ${{ github.workspace }}/ffmpeg_build_output/ffmpeg-binaries-linux-amd64.tar.gz # <--- Updated path
+        path: ${{ github.workspace }}/ffmpeg_build_output/ffmpeg-binaries-linux-amd64.tar.gz
         retention-days: 7
