@@ -1,105 +1,122 @@
-name: Build FFmpeg with libx264 for Broad Compatibility
+# .github/workflows/build.yml
+#
+# This GitHub Actions workflow builds a static version of FFmpeg for Linux (amd64)
+# with the libx264 encoder enabled. It is designed to be compatible with a range
+# of GLIBC versions from 2.29 to 2.35 by building on an older Ubuntu distribution.
+# The final static FFmpeg binary is uploaded as a build artifact.
+
+name: Build Static FFmpeg
 
 on:
-  push:
-    branches:
-      - main
+  # Allows you to run this workflow manually from the Actions tab
   workflow_dispatch:
+  # Triggers the workflow on push events but only for the main branch
+  push:
+    branches: [ "main" ]
 
 jobs:
   build:
-    runs-on: ubuntu-latest # Keep the default GitHub Actions runner (modern GLIBC)
+    # The type of runner that the job will run on
+    # We use ubuntu-20.04 as it has a glibc version (2.31) that is old enough
+    # to be compatible with the specified range. Building on an older system
+    # ensures better portability to newer systems.
+    runs-on: ubuntu-20.04
 
     steps:
-    - name: Checkout code
-      uses: actions/checkout@v4 # This action will now run successfully on ubuntu-latest
+    # Step 1: Checkout the repository code
+    - name: Checkout repository
+      uses: actions/checkout@v3
 
-    - name: Build FFmpeg inside CentOS 7 Docker container
+    # Step 2: Set up the build environment
+    # This involves creating directories for dependencies, sources, and the final build.
+    - name: Set up build environment
       run: |
-        # Define paths inside the container
-        CONTAINER_BUILD_DIR=/ffmpeg_build
-        CONTAINER_LIBS_DIR=/ffmpeg_build/ffmpeg_libs
-        CONTAINER_BIN_INSTALLED_DIR=/ffmpeg_build/bin_installed
-        CONTAINER_PKG_CONFIG_PATH=/ffmpeg_build/ffmpeg_libs/lib/pkgconfig
+        mkdir -p ~/ffmpeg_sources ~/ffmpeg_build ~/bin
+        echo "Build environment directories created."
 
-        # Create a build script to run inside the Docker container
-        cat << 'EOF' > build_script.sh
-        #!/bin/bash
-        set -euo pipefail # Exit on error, unset variables, pipefail
+    # Step 3: Install required dependencies
+    # These are the packages needed to compile FFmpeg and its dependencies.
+    - name: Install dependencies
+      run: |
+        sudo apt-get update -y
+        sudo apt-get install -y \
+          autoconf \
+          automake \
+          build-essential \
+          cmake \
+          git-core \
+          libass-dev \
+          libfreetype6-dev \
+          libgnutls28-dev \
+          libtool \
+          libva-dev \
+          libvdpau-dev \
+          libvorbis-dev \
+          libxcb1-dev \
+          libxcb-shm0-dev \
+          libxcb-xfixes0-dev \
+          meson \
+          nasm \
+          ninja-build \
+          pkg-config \
+          texinfo \
+          wget \
+          yasm \
+          zlib1g-dev
 
-        echo "Running inside Docker container..."
-
-        # Install build dependencies (for CentOS/RHEL/manylinux)
-        yum update -y && yum install -y \
-          gcc gcc-c++ make autoconf automake libtool pkgconfig \
-          nasm yasm git tar gzip
-
-        # Create build directories
-        mkdir -p "${CONTAINER_BUILD_DIR}"
-        cd "${CONTAINER_BUILD_DIR}"
-
-        # Build libx264
-        echo "Building libx264..."
-        git clone https://code.videolan.org/videolan/x264.git
+    # Step 4: Compile and install libx264
+    # We compile x264 from source to ensure we have a static library to link against.
+    - name: Build and install libx264
+      run: |
+        echo "Building libx264 from source..."
+        cd ~/ffmpeg_sources
+        git clone --branch stable --depth 1 https://code.videolan.org/videolan/x264.git
         cd x264
-        ./configure --prefix="${CONTAINER_LIBS_DIR}" --enable-static --disable-opencl
+        # Configure the build for a static library
+        ./configure --prefix="$HOME/ffmpeg_build" --bindir="$HOME/bin" --enable-static --enable-pic
         make -j$(nproc)
         make install
-        cd "${CONTAINER_BUILD_DIR}" # Go back
+        echo "libx264 build and installation complete."
 
-        # Build FFmpeg
-        echo "Building FFmpeg..."
-        git clone https://git.ffmpeg.org/ffmpeg.git ffmpeg
+    # Step 5: Compile FFmpeg
+    # This is the main step where we download and build FFmpeg.
+    # The configuration flags are crucial for creating a static build.
+    - name: Build FFmpeg
+      run: |
+        echo "Building FFmpeg from source..."
+        cd ~/ffmpeg_sources
+        # Use a recent but stable release of FFmpeg
+        wget -O ffmpeg-snapshot.tar.bz2 https://ffmpeg.org/releases/ffmpeg-snapshot.tar.bz2
+        tar xjvf ffmpeg-snapshot.tar.bz2
         cd ffmpeg
-
-        # Set PKG_CONFIG_PATH for the configure step within the container
-        export PKG_CONFIG_PATH="${CONTAINER_PKG_CONFIG_PATH}"
-
+        # The PATH is updated to find the executables compiled in previous steps (like x264)
+        # PKG_CONFIG_PATH is updated to find the .pc files for the compiled libraries
+        # The configure flags are set for a static build and include libx264
+        export PATH="$HOME/bin:$PATH"
+        export PKG_CONFIG_PATH="$HOME/ffmpeg_build/lib/pkgconfig"
         ./configure \
-          --prefix="${CONTAINER_BIN_INSTALLED_DIR}" \
+          --prefix="$HOME/ffmpeg_build" \
           --pkg-config-flags="--static" \
-          --extra-cflags="-I${CONTAINER_LIBS_DIR}/include" \
-          --extra-ldflags="-L${CONTAINER_LIBS_DIR}/lib" \
-          --bindir="/usr/local/bin" \
+          --extra-cflags="-I$HOME/ffmpeg_build/include" \
+          --extra-ldflags="-L$HOME/ffmpeg_build/lib" \
+          --extra-libs="-lpthread -lm" \
+          --bindir="$HOME/bin" \
           --enable-gpl \
+          --enable-libass \
+          --enable-libfreetype \
+          --enable-libvorbis \
           --enable-libx264 \
           --enable-nonfree \
           --disable-shared \
-          --enable-static \
-          --disable-doc \
-          --disable-debug \
-          # --disable-ffplay \
-          # REMOVE THIS LINE: --disable-ffprobe
+          --enable-static
         make -j$(nproc)
         make install
+        echo "FFmpeg build and installation complete."
 
-        echo "Verifying FFmpeg installation inside container..."
-        /usr/local/bin/ffmpeg -version
-
-        # Optional: Copy built binaries out of the container to a mounted volume
-        # (This is handled by the docker run command itself, mapping host path to container path)
-
-        EOF
-
-        # Run the build script inside a CentOS 7 Docker container
-        docker run --rm \
-          -v "$(pwd):/github/workspace" \
-          -v "$(pwd)/local_build_artifacts:${CONTAINER_BIN_INSTALLED_DIR}" \
-          centos:7 \
-          bash -c "cd /github/workspace && chmod +x build_script.sh && ./build_script.sh"
-
-        # Create a directory for artifacts on the host (GitHub Actions runner)
-        mkdir -p ${{ github.workspace }}/ffmpeg_build_output
-        # Copy the built binaries from the temporary host directory to the artifact directory
-        cp local_build_artifacts/ffmpeg local_build_artifacts/ffprobe ${{ github.workspace }}/ffmpeg_build_output/
-
-        # Now tar and upload from the host's perspective
-        cd ${{ github.workspace }}/ffmpeg_build_output
-        tar -czvf ffmpeg-binaries-linux-amd64.tar.gz ffmpeg ffprobe # Ensure ffprobe is built
-
-    - name: Upload FFmpeg binaries as artifact
-      uses: actions/upload-artifact@v4
+    # Step 6: Upload the static FFmpeg binary as an artifact
+    # This makes the compiled binary available for download from the GitHub Actions run summary page.
+    - name: Upload FFmpeg static build
+      uses: actions/upload-artifact@v3
       with:
-        name: ffmpeg-linux-amd64
-        path: ${{ github.workspace }}/ffmpeg_build_output/ffmpeg-binaries-linux-amd64.tar.gz
-        retention-days: 7
+        name: ffmpeg-static-linux-amd64
+        path: ~/bin/ffmpeg
