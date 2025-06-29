@@ -1,9 +1,8 @@
 # .github/workflows/build.yml
 #
 # This GitHub Actions workflow builds a static version of FFmpeg for Linux (amd64)
-# with the libx264 encoder enabled. It is designed to be compatible with a range
-# of GLIBC versions from 2.29 to 2.35 by building on an older Ubuntu distribution.
-# The final static FFmpeg binary is uploaded as a build artifact.
+# with the libx264 encoder enabled. It is specifically configured to be compatible with
+# a wide range of GLIBC versions, from 2.29 to 2.35 and newer.
 
 name: Build Static FFmpeg
 
@@ -16,11 +15,13 @@ on:
 
 jobs:
   build:
-    # The type of runner that the job will run on
-    # We use ubuntu-20.04 as it has a glibc version (2.31) that is old enough
-    # to be compatible with the specified range. Building on an older system
-    # ensures better portability to newer systems.
-    runs-on: ubuntu-20.04
+    # To ensure compatibility with a wide range of GLIBC versions (specifically
+    # starting from 2.29 as requested), we need to build on an older Linux
+    # distribution. We use an ubuntu:18.04 container, which has GLIBC 2.27.
+    # A binary compiled against an older GLIBC is forward-compatible with newer
+    # versions, thus ensuring it runs on systems with GLIBC 2.29 through 2.35.
+    runs-on: ubuntu-latest
+    container: ubuntu:18.04
 
     steps:
     # Step 1: Checkout the repository code
@@ -36,10 +37,11 @@ jobs:
 
     # Step 3: Install required dependencies
     # These are the packages needed to compile FFmpeg and its dependencies.
+    # We are running as the root user inside the container, so 'sudo' is not needed.
     - name: Install dependencies
       run: |
-        sudo apt-get update -y
-        sudo apt-get install -y \
+        apt-get update -y
+        apt-get install -y \
           autoconf \
           automake \
           build-essential \
