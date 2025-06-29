@@ -8,61 +8,59 @@ on:
 
 jobs:
   build:
-    # Use a self-hosted runner OR run directly inside a compatible Docker container
-    runs-on: ubuntu-latest # Still use this for the runner OS
-    container: # Add this section
-      image: centos:7 # Example: CentOS 7 has an older GLIBC (around 2.17)
-      # Alternatively, for even more control and Python compatibility:
-      # image: quay.io/pypa/manylinux2014_x86_64 # Based on CentOS 7, good for binary distribution
-      options: --user root # Ensure root privileges inside the container
-
-    env:
-      FFMPEG_BUILD_DIR: /ffmpeg_build # Paths inside the container
-      FFMPEG_LIBS_DIR: /ffmpeg_build/ffmpeg_libs
-      FFMPEG_BIN_INSTALLED_DIR: /ffmpeg_build/bin_installed
-      PKG_CONFIG_PATH: /ffmpeg_build/ffmpeg_libs/lib/pkgconfig
-      PATH: /usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin # Standard paths inside container
+    runs-on: ubuntu-latest # Keep the default GitHub Actions runner (modern GLIBC)
 
     steps:
     - name: Checkout code
-      uses: actions/checkout@v4
-      # With 'container', the repository is usually mounted at /__w/<repo>/<repo>
-      # We'll adjust subsequent commands to copy what we need into the container's build dir
+      uses: actions/checkout@v4 # This action will now run successfully on ubuntu-latest
 
-    - name: Install build dependencies inside container
+    - name: Build FFmpeg inside CentOS 7 Docker container
       run: |
-        # For CentOS/RHEL/manylinux
+        # Define paths inside the container
+        CONTAINER_BUILD_DIR=/ffmpeg_build
+        CONTAINER_LIBS_DIR=/ffmpeg_build/ffmpeg_libs
+        CONTAINER_BIN_INSTALLED_DIR=/ffmpeg_build/bin_installed
+        CONTAINER_PKG_CONFIG_PATH=/ffmpeg_build/ffmpeg_libs/lib/pkgconfig
+
+        # Create a build script to run inside the Docker container
+        cat << 'EOF' > build_script.sh
+        #!/bin/bash
+        set -euo pipefail # Exit on error, unset variables, pipefail
+
+        echo "Running inside Docker container..."
+
+        # Install build dependencies (for CentOS/RHEL/manylinux)
         yum update -y && yum install -y \
           gcc gcc-c++ make autoconf automake libtool pkgconfig \
           nasm yasm git tar gzip
 
-    - name: Prepare build directories
-      run: |
-        mkdir -p "${{ env.FFMPEG_BUILD_DIR }}"
-        # Copy source code (if needed, though git clone can be done directly)
-        # You might need to adjust based on how actions/checkout mounts your repo
-        # For simplicity, let's just do git clones directly inside the container
+        # Create build directories
+        mkdir -p "${CONTAINER_BUILD_DIR}"
+        cd "${CONTAINER_BUILD_DIR}"
 
-    - name: Build libx264
-      working-directory: ${{ env.FFMPEG_BUILD_DIR }}
-      run: |
+        # Build libx264
+        echo "Building libx264..."
         git clone https://code.videolan.org/videolan/x264.git
         cd x264
-        ./configure --prefix="${{ env.FFMPEG_LIBS_DIR }}" --enable-static --disable-opencl
+        ./configure --prefix="${CONTAINER_LIBS_DIR}" --enable-static --disable-opencl
         make -j$(nproc)
         make install
+        cd "${CONTAINER_BUILD_DIR}" # Go back
 
-    - name: Build FFmpeg
-      working-directory: ${{ env.FFMPEG_BUILD_DIR }}
-      run: |
+        # Build FFmpeg
+        echo "Building FFmpeg..."
         git clone https://git.ffmpeg.org/ffmpeg.git ffmpeg
         cd ffmpeg
+
+        # Set PKG_CONFIG_PATH for the configure step within the container
+        export PKG_CONFIG_PATH="${CONTAINER_PKG_CONFIG_PATH}"
+
         ./configure \
-          --prefix="${{ env.FFMPEG_BIN_INSTALLED_DIR }}" \
+          --prefix="${CONTAINER_BIN_INSTALLED_DIR}" \
           --pkg-config-flags="--static" \
-          --extra-cflags="-I${{ env.FFMPEG_LIBS_DIR }}/include" \
-          --extra-ldflags="-L${{ env.FFMPEG_LIBS_DIR }}/lib" \
-          --bindir="/usr/local/bin" \ # Install directly to /usr/local/bin inside container for easy access
+          --extra-cflags="-I${CONTAINER_LIBS_DIR}/include" \
+          --extra-ldflags="-L${CONTAINER_LIBS_DIR}/lib" \
+          --bindir="/usr/local/bin" \
           --enable-gpl \
           --enable-libx264 \
           --enable-nonfree \
@@ -75,17 +73,29 @@ jobs:
         make -j$(nproc)
         make install
 
-    - name: Verify FFmpeg installation
-      run: |
-        /usr/local/bin/ffmpeg -version # Call directly as PATH might not be updated for the specific user in container
+        echo "Verifying FFmpeg installation inside container..."
+        /usr/local/bin/ffmpeg -version
 
-    - name: Package FFmpeg binaries
-      run: |
-        mkdir -p "${{ github.workspace }}/ffmpeg_build_output"
-        # Get the binaries from the container's /usr/local/bin
-        tar -czvf "${{ github.workspace }}/ffmpeg_build_output/ffmpeg-binaries-linux-amd64.tar.gz" -C /usr/local/bin ffmpeg ffprobe
-        # ^^^ -C /usr/local/bin: change directory before adding files to tar
-        # You might need to ensure ffprobe is built (remove --disable-ffprobe)
+        # Optional: Copy built binaries out of the container to a mounted volume
+        # (This is handled by the docker run command itself, mapping host path to container path)
+
+        EOF
+
+        # Run the build script inside a CentOS 7 Docker container
+        docker run --rm \
+          -v "$(pwd):/github/workspace" \
+          -v "$(pwd)/local_build_artifacts:${CONTAINER_BIN_INSTALLED_DIR}" \
+          centos:7 \
+          bash -c "cd /github/workspace && chmod +x build_script.sh && ./build_script.sh"
+
+        # Create a directory for artifacts on the host (GitHub Actions runner)
+        mkdir -p ${{ github.workspace }}/ffmpeg_build_output
+        # Copy the built binaries from the temporary host directory to the artifact directory
+        cp local_build_artifacts/ffmpeg local_build_artifacts/ffprobe ${{ github.workspace }}/ffmpeg_build_output/
+
+        # Now tar and upload from the host's perspective
+        cd ${{ github.workspace }}/ffmpeg_build_output
+        tar -czvf ffmpeg-binaries-linux-amd64.tar.gz ffmpeg ffprobe # Ensure ffprobe is built
 
     - name: Upload FFmpeg binaries as artifact
       uses: actions/upload-artifact@v4
